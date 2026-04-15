@@ -1,0 +1,5 @@
+selenium
+webdriver-manager
+pdfplumber
+gspread
+oauth2client
