@@ -96,6 +96,14 @@ class Selectors:
 
     # Janela do demonstrativo
     BOTAO_BAIXAR_PDF = (By.ID, "btRelatorioPDF")
+    BOTOES_BAIXAR_PDF = [
+        (By.ID, "btRelatorioPDF"),
+        (By.XPATH, "//i[@id='btRelatorioPDF' or contains(@onclick,'pdf_excel') or contains(@title,'PDF')]"),
+        (
+            By.XPATH,
+            "//*[self::button or self::a or self::i][contains(translate(normalize-space(.),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'PDF')]",
+        ),
+    ]
 
 
 def criar_driver() -> webdriver.Chrome:
@@ -189,12 +197,13 @@ def garantir_janela_ativa(driver: webdriver.Chrome) -> None:
 
 
 def alternar_para_janela_com_elemento(
-    driver: webdriver.Chrome, locator: tuple[str, str], timeout: int = DEFAULT_TIMEOUT
-) -> bool:
+    driver: webdriver.Chrome, locators: tuple[str, str] | List[tuple[str, str]], timeout: int = DEFAULT_TIMEOUT
+) -> tuple[bool, tuple[str, str] | None]:
     """
-    Percorre as janelas abertas e alterna para a primeira que contem o elemento.
-    Retorna True quando encontrou; False quando nao encontrou em nenhuma.
+    Percorre janelas e iframes para localizar um elemento-alvo.
+    Mantem o contexto no local encontrado (janela/iframe) e retorna o locator encontrado.
     """
+    locators_list = [locators] if isinstance(locators, tuple) else list(locators)
     fim = time.time() + timeout
     while time.time() < fim:
         handles = driver.window_handles
@@ -202,12 +211,34 @@ def alternar_para_janela_com_elemento(
             try:
                 driver.switch_to.window(handle)
                 driver.switch_to.default_content()
-                WebDriverWait(driver, 2).until(EC.presence_of_element_located(locator))
-                return True
-            except (TimeoutException, NoSuchWindowException):
+                for locator in locators_list:
+                    try:
+                        WebDriverWait(driver, 1).until(EC.presence_of_element_located(locator))
+                        return True, locator
+                    except TimeoutException:
+                        continue
+
+                frames = driver.find_elements(By.CSS_SELECTOR, "iframe,frame")
+                for frame in frames:
+                    try:
+                        driver.switch_to.default_content()
+                        driver.switch_to.frame(frame)
+                        for locator in locators_list:
+                            try:
+                                WebDriverWait(driver, 1).until(EC.presence_of_element_located(locator))
+                                return True, locator
+                            except TimeoutException:
+                                continue
+                    except Exception:  # noqa: BLE001
+                        continue
+            except (TimeoutException, NoSuchWindowException, Exception):  # noqa: BLE001
                 continue
         time.sleep(0.3)
-    return False
+    try:
+        driver.switch_to.default_content()
+    except Exception:  # noqa: BLE001
+        pass
+    return False, None
 
 
 def expandir_collapse(driver: webdriver.Chrome, panel_id: str, toggle_locators: List[tuple[str, str]]) -> None:
@@ -317,21 +348,38 @@ def abrir_relatorio_em_nova_janela(driver: webdriver.Chrome) -> None:
     except TimeoutException:
         pass
 
-    # Garante que estamos em uma janela onde o botao de PDF existe.
-    if not alternar_para_janela_com_elemento(driver, Selectors.BOTAO_BAIXAR_PDF, timeout=DEFAULT_TIMEOUT):
-        raise TimeoutException(
-            "Nao foi possivel localizar o botao de PDF apos clicar em 'Abrir' "
-            "(nem em nova janela, nem na janela atual)."
-        )
+    # Em CI, o botao pode demorar mais para renderizar ou o download pode iniciar sem ele.
+    timeout_pdf = 45 if HEADLESS_MODE else DEFAULT_TIMEOUT
+    encontrou_pdf, _ = alternar_para_janela_com_elemento(driver, Selectors.BOTOES_BAIXAR_PDF, timeout=timeout_pdf)
+    if not encontrou_pdf:
+        print("Aviso: botao de PDF nao foi encontrado logo apos 'Abrir'. Tentando fluxo de download mesmo assim.")
+        salvar_debug(driver, "pdf_nao_encontrado_apos_abrir")
 
 
 def baixar_pdf(driver: webdriver.Chrome) -> Path:
     garantir_janela_ativa(driver)
-    if not alternar_para_janela_com_elemento(driver, Selectors.BOTAO_BAIXAR_PDF, timeout=DEFAULT_TIMEOUT):
-        raise TimeoutException("Botao de PDF nao encontrado na janela atual.")
+
+    # Alguns ambientes iniciam o download automaticamente apos clicar em "Abrir".
+    try:
+        return aguardar_download_pdf(timeout=8)
+    except TimeoutException:
+        pass
+
+    timeout_pdf = 45 if HEADLESS_MODE else DEFAULT_TIMEOUT
+    encontrou_pdf, locator_pdf = alternar_para_janela_com_elemento(driver, Selectors.BOTOES_BAIXAR_PDF, timeout=timeout_pdf)
+    if not encontrou_pdf or not locator_pdf:
+        raise TimeoutException(
+            "Botao de PDF nao encontrado (janela atual/novas janelas/iframes). "
+            "Verifique se o relatorio abriu corretamente no ambiente headless."
+        )
 
     janelas_antes = driver.window_handles.copy()
-    esperar_e_clicar(driver, Selectors.BOTAO_BAIXAR_PDF)
+    try:
+        esperar_e_clicar(driver, locator_pdf, timeout=10)
+    except Exception:  # noqa: BLE001
+        elemento = WebDriverWait(driver, 10).until(EC.presence_of_element_located(locator_pdf))
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elemento)
+        driver.execute_script("arguments[0].click();", elemento)
 
     # Dependendo do comportamento do portal, o clique pode abrir uma nova aba/janela com o PDF.
     try:
