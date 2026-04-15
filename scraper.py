@@ -188,6 +188,28 @@ def garantir_janela_ativa(driver: webdriver.Chrome) -> None:
     driver.switch_to.default_content()
 
 
+def alternar_para_janela_com_elemento(
+    driver: webdriver.Chrome, locator: tuple[str, str], timeout: int = DEFAULT_TIMEOUT
+) -> bool:
+    """
+    Percorre as janelas abertas e alterna para a primeira que contem o elemento.
+    Retorna True quando encontrou; False quando nao encontrou em nenhuma.
+    """
+    fim = time.time() + timeout
+    while time.time() < fim:
+        handles = driver.window_handles
+        for handle in reversed(handles):
+            try:
+                driver.switch_to.window(handle)
+                driver.switch_to.default_content()
+                WebDriverWait(driver, 2).until(EC.presence_of_element_located(locator))
+                return True
+            except (TimeoutException, NoSuchWindowException):
+                continue
+        time.sleep(0.3)
+    return False
+
+
 def expandir_collapse(driver: webdriver.Chrome, panel_id: str, toggle_locators: List[tuple[str, str]]) -> None:
     garantir_janela_ativa(driver)
     panel_locator = (By.ID, panel_id)
@@ -285,13 +307,29 @@ def abrir_relatorio_em_nova_janela(driver: webdriver.Chrome) -> None:
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", botao)
         driver.execute_script("arguments[0].click();", botao)
 
-    WebDriverWait(driver, DEFAULT_TIMEOUT).until(lambda d: len(d.window_handles) > len(janelas_antes))
-    janelas_depois = driver.window_handles
-    nova_janela = next(handle for handle in janelas_depois if handle not in janelas_antes)
-    driver.switch_to.window(nova_janela)
+    # Em alguns ambientes (especialmente headless/CI), o "Abrir" nao cria nova janela.
+    # Primeiro tenta alternar para nova janela; se nao existir, continua na atual.
+    try:
+        WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > len(janelas_antes))
+        janelas_depois = driver.window_handles
+        nova_janela = next(handle for handle in janelas_depois if handle not in janelas_antes)
+        driver.switch_to.window(nova_janela)
+    except TimeoutException:
+        pass
+
+    # Garante que estamos em uma janela onde o botao de PDF existe.
+    if not alternar_para_janela_com_elemento(driver, Selectors.BOTAO_BAIXAR_PDF, timeout=DEFAULT_TIMEOUT):
+        raise TimeoutException(
+            "Nao foi possivel localizar o botao de PDF apos clicar em 'Abrir' "
+            "(nem em nova janela, nem na janela atual)."
+        )
 
 
 def baixar_pdf(driver: webdriver.Chrome) -> Path:
+    garantir_janela_ativa(driver)
+    if not alternar_para_janela_com_elemento(driver, Selectors.BOTAO_BAIXAR_PDF, timeout=DEFAULT_TIMEOUT):
+        raise TimeoutException("Botao de PDF nao encontrado na janela atual.")
+
     janelas_antes = driver.window_handles.copy()
     esperar_e_clicar(driver, Selectors.BOTAO_BAIXAR_PDF)
 
