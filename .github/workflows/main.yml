@@ -8,6 +8,9 @@ on:
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
+    env:
+      # Evita warning/depreciação de actions em Node 20.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout
@@ -28,6 +31,16 @@ jobs:
 
       - name: Check Chrome version
         run: google-chrome --version
+
+      - name: Validate required secrets
+        env:
+          BAP_USERNAME: ${{ secrets.BAP_USERNAME }}
+          BAP_PASSWORD: ${{ secrets.BAP_PASSWORD }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          test -n "$BAP_USERNAME" || (echo "Secret BAP_USERNAME ausente"; exit 1)
+          test -n "$BAP_PASSWORD" || (echo "Secret BAP_PASSWORD ausente"; exit 1)
+          test -n "$GOOGLE_CREDENTIALS_JSON" || (echo "Secret GOOGLE_CREDENTIALS_JSON ausente"; exit 1)
 
       - name: Run scraper
         env:
