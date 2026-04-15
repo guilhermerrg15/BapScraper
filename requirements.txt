@@ -3,3 +3,6 @@ webdriver-manager
 pdfplumber
 gspread
 oauth2client
+streamlit
+pandas
+plotly
